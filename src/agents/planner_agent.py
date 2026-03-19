@@ -149,6 +149,11 @@ class PlannerAgent(BaseAgent[ExperimentConfig, ExecutionPlan]):
                 "rsi_window": config.rsi_window,
                 "atr_window": config.atr_window,
                 "volume_ma_window": config.volume_ma_window,
+                # External data config — passed through unchanged
+                "external_data_enabled": config.external_data_enabled,
+                "external_series": config.external_series,
+                "external_cache_dir": config.external_cache_dir,
+                "external_cache_ttl_hours": config.external_cache_ttl_hours,
             },
             backtest_config={
                 "initial_train_days": config.initial_train_days,

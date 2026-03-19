@@ -114,6 +114,7 @@ def _build_experiment_config(cfg: dict, args: argparse.Namespace):
     feat_cfg = cfg.get("features", {})
     bt_cfg = cfg.get("backtest", {})
     lgbm_cfg = cfg.get("lgbm", {})
+    ext_cfg = cfg.get("external_data", {})
 
     return ExperimentConfig(
         # data
@@ -137,6 +138,11 @@ def _build_experiment_config(cfg: dict, args: argparse.Namespace):
         min_train_days=bt_cfg.get("min_train_days", 252),
         # model
         lgbm_params=lgbm_cfg,
+        # external data
+        external_data_enabled=ext_cfg.get("enabled", False),
+        external_series=ext_cfg.get("series", []),
+        external_cache_dir=ext_cfg.get("cache_dir", "data/external"),
+        external_cache_ttl_hours=float(ext_cfg.get("cache_ttl_hours", 24.0)),
         # runtime
         experiment_id=args.experiment_id,
     )

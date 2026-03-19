@@ -38,16 +38,75 @@ lgbm:
   reg_lambda: 1.0
   random_state: 42
 
+# ── External data (optional macro/market feature enrichment) ──────────────────
+# Set enabled: true and supply the required API keys (see README for env vars).
+# Each entry in series[] adds one "ext_{name}" column to the feature matrix.
+#
+# Leakage prevention: every series is shifted by lag_days Samsung trading days
+# before merging.  lag_days >= 1 is enforced by the pipeline.
+# Use lag_days >= 5 for monthly data to account for announcement delays.
+#
+# API keys required (set as environment variables — never put keys here):
+#   FRED_API_KEY   free at https://fred.stlouisfed.org/docs/api/api_key.html
+#   ECOS_API_KEY   free at https://ecos.bok.or.kr/#/
+#   (yfinance / "market" source requires no API key)
+external_data:
+  enabled: false                  # flip to true to activate external features
+  cache_dir: "data/external"
+  cache_ttl_hours: 24.0
+
+  series:
+    - name: "kospi"               # KOSPI Composite Index log return
+      source: "market"
+      symbol: "^KS11"
+      lag_days: 1
+      feature_type: "log_return"
+      frequency: "daily"
+
+    - name: "usdkrw"              # USD/KRW exchange rate log return
+      source: "market"
+      symbol: "USDKRW=X"
+      lag_days: 1
+      feature_type: "log_return"
+      frequency: "daily"
+
+    - name: "us10y"               # US 10-Year Treasury yield level (%)
+      source: "fred"
+      symbol: "GS10"
+      lag_days: 1
+      feature_type: "level"
+      frequency: "daily"
+      api_key_env: "FRED_API_KEY"
+
+    - name: "vix"                 # CBOE VIX volatility index level
+      source: "fred"
+      symbol: "VIXCLS"
+      lag_days: 1
+      feature_type: "level"
+      frequency: "daily"
+      api_key_env: "FRED_API_KEY"
+
+    - name: "kr_base_rate"        # Bank of Korea base interest rate (%)
+      source: "ecos"
+      symbol: "722Y001"
+      lag_days: 5                 # 5-day lag accounts for announcement delays
+      feature_type: "level"
+      frequency: "monthly"
+      api_key_env: "ECOS_API_KEY"
+      extra:
+        item_code: "0101000"
+        cycle: "MM"
+
 # ── LLM (optional) ────────────────────────────────────────────────────────────
 # Set provider to "none" to run fully deterministic (no LLM calls).
 # Set to "openai" or "anthropic" and supply the matching API key env var.
 llm:
-  provider: "none"                    # none | openai | anthropic
+  provider: "openai"                    # none | openai | anthropic
   model: "gpt-4o-mini"               # openai: gpt-4o-mini | anthropic: claude-haiku-4-5-20251001
   temperature: 0.2
   max_tokens: 1024
   timeout_seconds: 30.0
-  api_key_env: "OPENAI_API_KEY"      # env var that holds the API key
+  api_key_env: "OPENAI_API_KEY"     # env var that holds the API key
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging:

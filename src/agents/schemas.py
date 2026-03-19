@@ -42,6 +42,12 @@ class ExperimentConfig(BaseModel):
 
     lgbm_params: dict[str, Any] = Field(default_factory=dict)
 
+    # External data features (optional enrichment)
+    external_data_enabled: bool = False
+    external_series: list[dict[str, Any]] = Field(default_factory=list)
+    external_cache_dir: str = "data/external"
+    external_cache_ttl_hours: float = 24.0
+
     # Populated by the orchestrator at runtime
     experiment_id: str = ""
 

@@ -51,6 +51,27 @@ class ModelingAgent(BaseAgent[ModelingInput, ModelingResult]):
         bc = plan.backtest_config
         mc = plan.lgbm_config
 
+        # ── External feature merge (optional) ────────────────────────────────
+        ext_cols: list[str] = []
+        if fc.get("external_data_enabled") and fc.get("external_series"):
+            from src.features.external_merge import (
+                ExternalSeriesConfig,
+                merge_external_features,
+            )
+            series_cfgs = [ExternalSeriesConfig(**s) for s in fc["external_series"]]
+            fetch_start = ohlcv.index[0].strftime("%Y-%m-%d")
+            fetch_end = ohlcv.index[-1].strftime("%Y-%m-%d")
+            ohlcv = merge_external_features(
+                ohlcv,
+                series_cfgs,
+                start=fetch_start,
+                end=fetch_end,
+                cache_dir=fc.get("external_cache_dir", "data/external"),
+                cache_ttl_hours=float(fc.get("external_cache_ttl_hours", 24.0)),
+            )
+            ext_cols = [c for c in ohlcv.columns if c.startswith("ext_")]
+            logger.info("[ModelingAgent] external columns added: %s", ext_cols)
+
         # ── Feature engineering ───────────────────────────────────────────────
         logger.info("[ModelingAgent] building feature matrix …")
         feat_df = build_feature_matrix(
@@ -63,6 +84,18 @@ class ModelingAgent(BaseAgent[ModelingInput, ModelingResult]):
             target_kind=plan.target_kind,
             horizon=plan.horizon,
         )
+
+        # Rejoin external features — build_feature_matrix builds its own
+        # DataFrame from scratch (only uses close/high/low/volume), so
+        # ext_* columns must be added back by index alignment.
+        if ext_cols:
+            feat_df = feat_df.join(ohlcv[ext_cols], how="left")
+            feat_df.dropna(inplace=True)   # remove external warmup NaN rows
+            logger.info(
+                "[ModelingAgent] after external join: %d rows, %d ext cols",
+                len(feat_df), len(ext_cols),
+            )
+
         feat_names = feature_columns(feat_df)
         logger.info("[ModelingAgent] %d rows × %d features", len(feat_df), len(feat_names))
 

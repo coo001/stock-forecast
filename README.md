@@ -1,94 +1,26 @@
-# Samsung Electronics Stock Forecasting Pipeline
+# 삼성전자 주가 예측 파이프라인
 
-A research-grade forecasting system for Samsung Electronics (005930.KS) built on a multi-agent orchestration architecture. The pipeline runs end-to-end from raw market data ingestion through feature engineering, walk-forward backtesting, and LLM-assisted evaluation.
+삼성전자(005930.KS) 주가를 예측하기 위한 멀티에이전트 리서치 파이프라인입니다.
+데이터 수집 → 피처 엔지니어링 → walk-forward 백테스트 → 평가까지 end-to-end로 동작합니다.
 
-> **Current Status:** The system works technically end-to-end with real market data and LLM integration. Model predictive performance is currently poor (near-random directional accuracy), which is expected and honest — this is the baseline from which improvement begins.
-
----
-
-## Architecture
-
-```
-run_pipeline.py
-      │
-      ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Orchestrator                         │
-│                                                         │
-│  Step 1: PlannerAgent   ──► ExecutionPlan               │
-│            │ (LLM: suggest feature windows              │
-│            │  from past experiment history)             │
-│                                                         │
-│  Step 2: DataAgent      ──► DataSummary                 │
-│            │ (download / cache / validate OHLCV)        │
-│                                                         │
-│  Step 3: ModelingAgent  ──► ModelingResult              │
-│            │ (build features → LightGBM → walk-forward) │
-│                                                         │
-│  Step 4: EvaluationAgent ─► EvaluationReport            │
-│            │ (rule-based metrics + optional LLM         │
-│            │  interpretation and verdict)               │
-│                                                         │
-│  Step 5: ReportAgent    ──► ExperimentReport (JSON)     │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Key design decisions
-
-| Decision | Rationale |
-|---|---|
-| Fixed pipeline, not GroupChat | Deterministic handoff; no agent chatter |
-| Two-pass evaluation | Rule-based always runs; LLM enriches only if available |
-| DataFrame side-channel | Keeps all inter-agent schemas JSON-serialisable |
-| Walk-forward (expanding window) | No data leakage; mirrors live trading retraining |
-| LLM reads past reports | PlannerAgent suggests better features across experiments |
+> **현재 상태:** 파이프라인은 정상 작동하지만, 예측 성능은 아직 낮습니다(방향성 정확도 ~48–52%).
+> 이는 출발점으로서 예상된 결과이며, 피처 개선과 외부 데이터 추가를 통해 개선할 예정입니다.
 
 ---
 
-## Project Structure
+## 핵심 기능
 
-```
-samsung/
-├── config/
-│   └── default.yaml          # All hyperparameters and settings
-├── src/
-│   ├── agents/
-│   │   ├── orchestrator.py   # run_experiment() — main entry point
-│   │   ├── planner_agent.py  # Plans feature config; LLM-assisted on 2nd+ run
-│   │   ├── data_agent.py     # Downloads/caches OHLCV data
-│   │   ├── modeling_agent.py # Feature engineering + LightGBM walk-forward
-│   │   ├── evaluation_agent.py # Metrics + LLM interpretation
-│   │   ├── report_agent.py   # Saves JSON experiment report
-│   │   ├── llm_client.py     # Thin LLM client (OpenAI / Anthropic / Mock)
-│   │   └── schemas.py        # Pydantic v2 inter-agent contracts
-│   ├── data/
-│   │   ├── loader.py         # yfinance download + CSV cache
-│   │   ├── schema.py         # DataConfig, OHLCVRow
-│   │   └── synthetic.py      # GBM-based Samsung-like data (offline use)
-│   ├── features/
-│   │   ├── indicators.py     # Pure functions: RSI, ATR, MA ratio, etc.
-│   │   └── pipeline.py       # build_feature_matrix()
-│   ├── models/
-│   │   ├── base.py           # BaseForecaster ABC
-│   │   └── lgbm_model.py     # LGBMForecaster
-│   ├── backtest/
-│   │   ├── metrics.py        # DA, MAE, RMSE, Sharpe, IC
-│   │   └── walk_forward.py   # Expanding-window WF validation
-│   └── startup.py            # Preflight dependency checks
-├── scripts/
-│   ├── demo_agents.py        # Quick demo (synthetic or real data)
-│   └── demo_agents_llm.py    # Demo with LLM modes (mock/openai/anthropic)
-├── tests/                    # 92 tests across all modules
-├── run_pipeline.py           # CLI entry point
-├── pyproject.toml
-└── requirements.txt
-```
+- **멀티에이전트 파이프라인:** `PlannerAgent → DataAgent → ModelingAgent → EvaluationAgent → ReportAgent`
+- **Walk-forward 백테스트:** 미래 데이터 누수 없이 실제 트레이딩 재학습 방식으로 검증
+- **외부 데이터 연동:** KOSPI, USD/KRW, VIX, 한국은행 기준금리 등 (선택적 활성화)
+- **LLM 통합:** OpenAI / Anthropic으로 실험 제안 및 결과 해석 (선택 사항)
+- **실험 리포트:** 매 실행마다 `reports/<experiment_id>.json`으로 결과 자동 저장
 
 ---
 
-## Quickstart
+## 실행 방법
 
-### 1. Clone and install dependencies
+### 1. 설치
 
 ```bash
 git clone https://github.com/coo001/stock-forecast.git
@@ -96,234 +28,109 @@ cd stock-forecast
 pip install -r requirements.txt
 ```
 
-### 2. Set API keys (Windows)
-
-The pipeline can run with or without LLM integration.
-
-**Without LLM (fully deterministic):**
-
-Edit `config/default.yaml` and set:
-```yaml
-llm:
-  provider: "none"
-```
-
-**With OpenAI:**
-
-```cmd
-# Command Prompt
-set OPENAI_API_KEY=sk-...your-key-here...
-
-# PowerShell
-$env:OPENAI_API_KEY = "sk-...your-key-here..."
-```
-
-Then in `config/default.yaml`:
-```yaml
-llm:
-  provider: "openai"
-  model: "gpt-4o-mini"
-  api_key_env: "OPENAI_API_KEY"
-```
-
-**With Anthropic:**
-
-```cmd
-set ANTHROPIC_API_KEY=sk-ant-...your-key-here...
-```
-
-```yaml
-llm:
-  provider: "anthropic"
-  model: "claude-haiku-4-5-20251001"
-  api_key_env: "ANTHROPIC_API_KEY"
-```
-
-> **Never hard-code API keys in config files.** The `api_key_env` field is just the environment variable name, not the key itself.
-
----
-
-## Running the Pipeline
-
-### Real Samsung market data (requires internet)
+### 2. 실행
 
 ```bash
+# 기본 실행 (실시간 데이터 다운로드)
 python run_pipeline.py
-```
 
-```bash
-# Override LLM provider from the command line
-python run_pipeline.py --llm-provider openai
-
-# Force re-download data
-python run_pipeline.py --force-refresh
-
-# Use cached data only (no network)
-python run_pipeline.py --no-download
-```
-
-### Synthetic data (offline, no yfinance needed)
-
-```bash
+# 오프라인 테스트 (네트워크 불필요)
 python run_pipeline.py --synthetic
+
+# 캐시된 데이터만 사용
+python run_pipeline.py --no-download
+
+# 데이터 강제 재다운로드
+python run_pipeline.py --force-refresh
 ```
 
-### Custom config or output directory
+### 3. LLM 연결 (선택 사항)
+
+API 키는 **반드시 환경변수로만** 설정합니다. `config/default.yaml`의 `api_key_env` 필드에는 실제 키가 아니라 **환경변수 이름**을 넣습니다.
 
 ```bash
-python run_pipeline.py --config config/default.yaml --reports-dir experiments/
+# Windows Command Prompt
+set OPENAI_API_KEY=sk-...
+
+# Windows PowerShell
+$env:OPENAI_API_KEY = "sk-..."
 ```
 
-### Fix experiment ID for reproducibility
-
-```bash
-python run_pipeline.py --experiment-id baseline_v1
+`config/default.yaml`:
+```yaml
+llm:
+  provider: "openai"          # none | openai | anthropic
+  model: "gpt-4o-mini"
+  api_key_env: "OPENAI_API_KEY"   # ← 키 자체가 아닌 환경변수 이름
 ```
+
+LLM 없이 완전 결정론적으로 실행하려면 `provider: "none"`으로 설정하면 됩니다.
 
 ---
 
-## Experiment Reports
+## 결과물
 
-Every run saves a JSON report to `reports/<experiment_id>.json`.
+실행할 때마다 `reports/<experiment_id>.json`에 리포트가 저장되고, 터미널에 요약이 출력됩니다.
 
-**Report location:**
 ```
-reports/
-└── 20260319_143022_abc12345.json   ← auto-generated ID
-└── baseline_v1.json                ← fixed ID via --experiment-id
-```
-
-**What the report contains:**
-- Full `ExperimentConfig` (features, backtest params, model hyperparams)
-- `DataSummary` (rows, date range, data quality flags)
-- `ModelingResult` (per-fold metrics, feature importances)
-- `EvaluationReport` (aggregate metrics, verdict, LLM interpretation if enabled)
-
-**Text summary printed to stdout:**
-```
-============================== EXPERIMENT REPORT ==============================
-Experiment : baseline_v1
-Generated  : 2026-03-19T14:30:22+00:00
+======================================================================
+EXPERIMENT REPORT  [exp_20260319T071656]
+Generated: 2026-03-19T07:17:08+00:00
+======================================================================
 Ticker     : 005930.KS
-Target     : next_day_log_return  (horizon=1)
-
------------------------------- DATA SUMMARY ----------------------------
-Rows       : 2,345   |   2015-01-02  ->  2026-03-18
-Sufficient : yes
-
------------------------------- MODEL RESULTS ---------------------------
+Target     : next_day_log_return  (horizon=1d)
+Data       : 2015-01-02 → 2026-03-19  (2,747 rows)
+Features   : 10
 Model      : LGBMForecaster
-Folds      : 14   |   OOS observations: 882
-DA         : 51.3%   |   Sharpe: 0.18   |   IC: 0.024
-
------------------------------- EVALUATION ------------------------------
-Verdict    : marginal
-...
+OOS obs.   : 2,193  over 35 folds
+----------------------------------------------------------------------
+METRICS (mean across folds)
+  directional_accuracy         0.4797
+  sharpe                      -0.5348
+  mae                          0.0141
+  ic                           0.0046
+----------------------------------------------------------------------
+VERDICT    : POOR
 ```
 
----
-
-## Current Experiment Results
-
-> **Honest assessment:** The baseline model performs near-randomly on next-day return prediction, which is consistent with the efficient market hypothesis for large-cap liquid stocks.
-
-| Metric | Typical Result | Interpretation |
-|---|---|---|
-| Directional Accuracy | ~50–52% | Near random (50% is coin flip) |
-| Annualised Sharpe | 0.1–0.4 | Too low for live trading |
-| Information Coefficient | 0.02–0.05 | Very weak signal |
-| Verdict | `marginal` | Technically works; not tradeable |
-
-**Top features by importance** (LightGBM gain):
-- Short-term log returns (1d, 5d)
-- RSI(14)
-- ATR percentage (14d)
-- Volume ratio
-
-**What this means:** The current feature set captures some momentum and volatility structure, but not enough to overcome transaction costs. This is the expected starting point.
+리포트에는 폴드별 상세 지표, 피처 중요도, LLM 해석(활성화된 경우)이 포함됩니다.
 
 ---
 
-## Next Improvements
+## 현재 한계
 
-### 1. Better feature engineering
-- **Calendar effects:** day-of-week, month, earnings season flag
-- **Volatility regimes:** rolling realised vol, GARCH-like features
-- **Price patterns:** gap-open size, intraday range ratio
-- **Longer lookbacks:** 60d, 120d, 252d return windows
-
-### 2. Market index and macro features
-- **KOSPI / KOSDAQ index returns** — Samsung is ~25% of KOSPI; market-wide momentum matters
-- **USD/KRW exchange rate** — Samsung exports ~80% overseas; FX directly impacts earnings
-- **Semiconductor sector ETF** (e.g. SOXX) returns
-- **VIX** — global risk sentiment
-- **US 10Y treasury yield** — risk-free rate proxy
-
-### 3. Alternative models
-- **Elastic Net / Ridge regression** — interpretable linear baseline
-- **XGBoost** — alternative gradient boosting
-- **LSTM / Transformer** — sequence models for temporal dependencies
-- **Ensemble** — stacked model combining LightGBM + linear
-
-### 4. Better target definitions
-- **5-day or 20-day forward return** — less noise than 1-day
-- **Risk-adjusted return** (return / realised vol) — more stable signal
-- **Direction classification** — frame as binary; use AUC instead of DA
-- **Volatility target** — predict future vol rather than direction
-
-### 5. Experiment tracking
-- **MLflow** integration — log params, metrics, artifacts per run
-- **Automated re-runs** — run grid search over feature configs
-- **Report comparison** — `PlannerAgent` already reads past reports; extend to rank experiments
-- **Alert on regime change** — detect when model degrades in live use
+- 방향성 정확도가 랜덤 수준(~50%)에 가깝고, Sharpe ratio가 음수
+- 현재 피처셋(기술 지표 10개)만으로는 예측 신호가 충분하지 않음
+- 1일 수익률 예측은 노이즈가 많아 본질적으로 어려운 태스크
 
 ---
 
-## Running Tests
+## 다음 목표
+
+- **외부 데이터 활성화:** KOSPI, USD/KRW, VIX 등 매크로 피처 추가 (`external_data.enabled: true`)
+- **피처 개선:** 긴 리턴 윈도우(60d, 120d), 변동성 레짐, 캘린더 효과
+- **타겟 변경:** 5일·20일 수익률, 방향성 분류(AUC 기준) 실험
+- **모델 다양화:** Ridge 회귀, XGBoost, LSTM 등 비교 실험
+
+---
+
+## 테스트
 
 ```bash
-# All 92 tests
-pytest
-
-# Specific module
-pytest tests/test_agents.py -v
-pytest tests/test_startup.py -v
-
-# With coverage
-pytest --cov=src
+pytest                     # 전체 테스트
+pytest --cov=src           # 커버리지 포함
 ```
 
-All tests use synthetic data and `MockLLMClient` — no API keys or internet required.
+테스트는 합성 데이터와 MockLLMClient를 사용하므로 API 키나 인터넷 연결이 필요 없습니다.
 
 ---
 
-## Tech Stack
+## 스택
 
-| Layer | Library |
-|---|---|
-| Data | `yfinance`, `pandas` |
-| Features | `ta` (technical analysis), `numpy` |
-| Model | `lightgbm` |
-| Validation | Custom walk-forward (no sklearn leakage) |
-| Agents | Custom pipeline (AutoGen-compatible design) |
-| LLM | `openai` / `anthropic` (optional) |
-| Schemas | `pydantic` v2 |
-| Config | `pyyaml` |
-| Tests | `pytest` (92 tests) |
+Python 3.11 · LightGBM · pandas · yfinance · Pydantic v2 · pytest · OpenAI/Anthropic (선택)
 
 ---
 
-## Environment Variables Reference
-
-| Variable | Required | Used for |
-|---|---|---|
-| `OPENAI_API_KEY` | Only if `llm.provider: openai` | OpenAI API calls |
-| `ANTHROPIC_API_KEY` | Only if `llm.provider: anthropic` | Anthropic API calls |
-
-No other secrets or credentials are required. All data is fetched from Yahoo Finance (public, no key needed).
-
----
-
-## License
+## 라이선스
 
 MIT

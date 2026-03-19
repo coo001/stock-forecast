@@ -40,6 +40,11 @@ data/cache/
 # Experiment reports (generated output — not source)
 reports/
 
+# Frontend build artifacts
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
+
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb

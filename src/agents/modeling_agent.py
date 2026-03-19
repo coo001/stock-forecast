@@ -53,14 +53,25 @@ class ModelingAgent(BaseAgent[ModelingInput, ModelingResult]):
 
         # ── External feature merge (optional) ────────────────────────────────
         ext_cols: list[str] = []
-        if fc.get("external_data_enabled") and fc.get("external_series"):
+        ext_enabled = bool(fc.get("external_data_enabled"))
+        configured_series = fc.get("external_series") or []
+        logger.info(
+            "[ModelingAgent] external_data_enabled=%s, configured series=%d",
+            ext_enabled, len(configured_series),
+        )
+
+        if ext_enabled and configured_series:
             from src.features.external_merge import (
                 ExternalSeriesConfig,
                 merge_external_features,
             )
-            series_cfgs = [ExternalSeriesConfig(**s) for s in fc["external_series"]]
+            series_cfgs = [ExternalSeriesConfig(**s) for s in configured_series]
             fetch_start = ohlcv.index[0].strftime("%Y-%m-%d")
             fetch_end = ohlcv.index[-1].strftime("%Y-%m-%d")
+            logger.info(
+                "[ModelingAgent] merging %d external series (%s … %s)",
+                len(series_cfgs), fetch_start, fetch_end,
+            )
             ohlcv = merge_external_features(
                 ohlcv,
                 series_cfgs,
@@ -70,7 +81,20 @@ class ModelingAgent(BaseAgent[ModelingInput, ModelingResult]):
                 cache_ttl_hours=float(fc.get("external_cache_ttl_hours", 24.0)),
             )
             ext_cols = [c for c in ohlcv.columns if c.startswith("ext_")]
-            logger.info("[ModelingAgent] external columns added: %s", ext_cols)
+            if ext_cols:
+                logger.info("[ModelingAgent] external columns merged: %s", ext_cols)
+            else:
+                logger.warning(
+                    "[ModelingAgent] external_data_enabled=True but NO ext_* columns "
+                    "were merged. Check API keys, symbols, and date ranges. "
+                    "Configured series: %s",
+                    [s.name for s in series_cfgs],
+                )
+        elif ext_enabled and not configured_series:
+            logger.warning(
+                "[ModelingAgent] external_data_enabled=True but no series configured "
+                "under external_data.series in the config file."
+            )
 
         # ── Feature engineering ───────────────────────────────────────────────
         logger.info("[ModelingAgent] building feature matrix …")
@@ -97,7 +121,12 @@ class ModelingAgent(BaseAgent[ModelingInput, ModelingResult]):
             )
 
         feat_names = feature_columns(feat_df)
-        logger.info("[ModelingAgent] %d rows × %d features", len(feat_df), len(feat_names))
+        n_tech = len(feat_names) - len(ext_cols)
+        logger.info(
+            "[ModelingAgent] feature matrix: %d rows × %d features "
+            "(%d technical + %d external)",
+            len(feat_df), len(feat_names), n_tech, len(ext_cols),
+        )
 
         # ── Walk-forward ──────────────────────────────────────────────────────
         logger.info("[ModelingAgent] starting walk-forward …")

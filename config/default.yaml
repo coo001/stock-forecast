@@ -49,13 +49,21 @@ lgbm:
 # API keys required (set as environment variables — never put keys here):
 #   FRED_API_KEY   free at https://fred.stlouisfed.org/docs/api/api_key.html
 #   ECOS_API_KEY   free at https://ecos.bok.or.kr/#/
+#   DART_API_KEY   free at https://opendart.fss.or.kr/intro/main.do
+#   NEWSAPI_KEY    free at https://newsapi.org/register  (recent 30d only)
 #   (yfinance / "market" source requires no API key)
+#
+# Source tiers:
+#   Tier 1 — official facts    : dart (Korean FSS disclosures)
+#   Tier 2 — market prices     : market (yfinance), fred
+#   Tier 3 — perception signal : gdelt news sentiment (not ground truth)
 external_data:
   enabled: false                  # flip to true to activate external features
   cache_dir: "data/external"
   cache_ttl_hours: 24.0
 
   series:
+    # ── Tier 2: Macro / market prices (no API key) ───────────────────────────
     - name: "kospi"               # KOSPI Composite Index log return
       source: "market"
       symbol: "^KS11"
@@ -66,6 +74,34 @@ external_data:
     - name: "usdkrw"              # USD/KRW exchange rate log return
       source: "market"
       symbol: "USDKRW=X"
+      lag_days: 1
+      feature_type: "log_return"
+      frequency: "daily"
+
+    - name: "sox"                 # Philadelphia Semiconductor Index log return
+      source: "market"
+      symbol: "^SOX"
+      lag_days: 1
+      feature_type: "log_return"
+      frequency: "daily"
+
+    - name: "hynix"               # SK Hynix log return (sector peer)
+      source: "market"
+      symbol: "000660.KS"
+      lag_days: 1
+      feature_type: "log_return"
+      frequency: "daily"
+
+    - name: "dxy"                 # US Dollar Index log return
+      source: "market"
+      symbol: "DX-Y.NYB"
+      lag_days: 1
+      feature_type: "log_return"
+      frequency: "daily"
+
+    - name: "sp500"               # S&P 500 log return (global risk proxy)
+      source: "market"
+      symbol: "^GSPC"
       lag_days: 1
       feature_type: "log_return"
       frequency: "daily"
@@ -96,6 +132,48 @@ external_data:
       extra:
         item_code: "0101000"
         cycle: "MM"
+
+    # ── Tier 1: Official DART disclosures (requires DART_API_KEY) ────────────
+    - name: "dart_earnings"       # Quarterly/annual earnings filings count
+      source: "dart"
+      symbol: "00126380"          # Samsung Electronics corp_code
+      lag_days: 1
+      feature_type: "level"
+      frequency: "daily"
+      api_key_env: "DART_API_KEY"
+      extra:
+        pblntf_ty: "A"            # 정기공시: audited facts only
+
+    - name: "dart_major"          # Material event disclosures count
+      source: "dart"
+      symbol: "00126380"
+      lag_days: 1
+      feature_type: "level"
+      frequency: "daily"
+      api_key_env: "DART_API_KEY"
+      extra:
+        pblntf_ty: "B"            # 주요사항보고서: capex, M&A, management
+
+    # ── Tier 3: News perception signal (GDELT — no key, historical from 2013) ─
+    # IMPORTANT: Treat as "market perception", not factual ground truth.
+    # Stored separately from fundamental (DART) features.
+    - name: "news_tone"           # Daily avg sentiment tone from GDELT
+      source: "gdelt"
+      symbol: "samsung electronics semiconductor"
+      lag_days: 1
+      feature_type: "level"
+      frequency: "daily"
+      extra:
+        metric: "tone"
+
+    - name: "news_count"          # Daily article volume from GDELT
+      source: "gdelt"
+      symbol: "samsung electronics"
+      lag_days: 1
+      feature_type: "level"
+      frequency: "daily"
+      extra:
+        metric: "count"
 
 # ── LLM (optional) ────────────────────────────────────────────────────────────
 # Set provider to "none" to run fully deterministic (no LLM calls).

@@ -53,7 +53,12 @@ from src.data.external.cache import ExternalCache
 logger = logging.getLogger(__name__)
 
 _VALID_FEATURE_TYPES = frozenset({"level", "diff", "pct_change", "log_return"})
-_VALID_SOURCES = frozenset({"market", "fred", "ecos", "alpha_vantage"})
+_VALID_SOURCES = frozenset({
+    "market", "fred", "ecos", "alpha_vantage",
+    "dart",       # DART official filings (Korean FSS)
+    "gdelt",      # GDELT 2.0 news sentiment (historical, no key)
+    "newsapi",    # NewsAPI.org (recent 30 days only, key required)
+})
 
 
 # ── Config dataclass ──────────────────────────────────────────────────────────
@@ -65,7 +70,9 @@ class ExternalSeriesConfig:
     Attributes:
         name: Short identifier; the merged column will be ``"ext_{name}"``.
         source: Data source — ``"market"`` (yfinance), ``"fred"``, ``"ecos"``,
-                or ``"alpha_vantage"`` (stub).
+                ``"alpha_vantage"`` (stub), ``"dart"`` (Korean FSS disclosures),
+                ``"gdelt"`` (GDELT 2.0 news, historical), or
+                ``"newsapi"`` (NewsAPI.org, recent 30 days only).
         symbol: Source-specific identifier:
                 market → Yahoo Finance ticker (``"^KS11"``)
                 fred   → FRED series ID (``"GS10"``)
@@ -258,6 +265,27 @@ def _fetch_from_source(cfg: ExternalSeriesConfig, start: str, end: str) -> pd.Se
             cfg.extra.get("function", "TIME_SERIES_DAILY"),
             cfg.symbol,
             api_key_env=cfg.api_key_env or "ALPHA_VANTAGE_API_KEY",
+        )
+
+    elif cfg.source == "dart":
+        from src.data.external.dart_client import fetch_series
+        return fetch_series(
+            cfg.symbol,
+            start=start,
+            end=end,
+            api_key_env=cfg.api_key_env or "DART_API_KEY",
+            pblntf_ty=cfg.extra.get("pblntf_ty", ""),
+        )
+
+    elif cfg.source in ("gdelt", "newsapi"):
+        from src.data.external.news_client import fetch_series
+        return fetch_series(
+            cfg.symbol,
+            start=start,
+            end=end,
+            api_key_env=cfg.api_key_env or "NEWSAPI_KEY",
+            metric=cfg.extra.get("metric", "tone"),
+            source_backend=cfg.source,
         )
 
     raise ValueError(f"Unknown source: '{cfg.source}'")

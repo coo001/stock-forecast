@@ -149,8 +149,10 @@ def load_external_series(
 
     cached = cache.get(cache_key, ttl_hours=cache_ttl_hours)
     if cached is not None:
+        logger.info("[external_merge] '%s' -- cache hit", cfg.name)
         return cached
 
+    logger.info("[external_merge] '%s' -- fetching live (source=%s)", cfg.name, cfg.source)
     series = _fetch_from_source(cfg, start, end)
     cache.set(cache_key, series)
     return series

@@ -100,6 +100,18 @@ _MARKET_SERIES: list[ExternalSeriesConfig] = [
     ExternalSeriesConfig(name="sp500",  source="market", symbol="^GSPC",       lag_days=1, feature_type="log_return"),
 ]
 
+# Pruned market features: remove highly correlated duplicates.
+# Dropped from full set:
+#   hynix  -- correlated with kospi (~0.7+; same Korean market)
+#   sp500  -- correlated with sox   (~0.8+; sox is more sector-relevant)
+#   dxy    -- correlated with usdkrw (~0.65+; redundant dollar-strength proxy)
+# Retained: kospi (domestic beta), sox (semiconductor sector), usdkrw (FX)
+_MARKET_SERIES_PRUNED: list[ExternalSeriesConfig] = [
+    ExternalSeriesConfig(name="kospi",  source="market", symbol="^KS11",    lag_days=1, feature_type="log_return"),
+    ExternalSeriesConfig(name="sox",    source="market", symbol="^SOX",     lag_days=1, feature_type="log_return"),
+    ExternalSeriesConfig(name="usdkrw", source="market", symbol="USDKRW=X", lag_days=1, feature_type="log_return"),
+]
+
 # Improved GDELT queries: Samsung-specific + semiconductor sector
 # Two separate queries capture different signal dimensions:
 #   Samsung query   → company-specific attention / tone
@@ -163,6 +175,18 @@ def _build_variants(include_dart: bool) -> dict[str, dict]:
         "internal_market_news": {
             "series": _MARKET_SERIES + _NEWS_SERIES,
             "note": "GDELT (needs internet; news=CAMEO proxy)",
+            "needs_internet": True,
+            "needs_dart": False,
+        },
+        "internal_market_pruned": {
+            "series": _MARKET_SERIES_PRUNED,
+            "note": "kospi+sox+usdkrw (low-collinearity subset)",
+            "needs_internet": True,
+            "needs_dart": False,
+        },
+        "internal_market_pruned_news": {
+            "series": _MARKET_SERIES_PRUNED + _NEWS_SERIES,
+            "note": "pruned market + GDELT news",
             "needs_internet": True,
             "needs_dart": False,
         },
@@ -330,6 +354,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     results: dict[str, dict] = {}
+    feat_df_cache: dict[str, pd.DataFrame] = {}   # keyed by variant_key
 
     # -- LightGBM ablation -----------------------------------------------------
     for variant_key, vdef in variants.items():
@@ -346,6 +371,7 @@ def main(argv: list[str] | None = None) -> int:
                 ohlcv, vdef["series"],
                 cache_dir=cache_dir, cache_ttl_hours=cache_ttl,
             )
+            feat_df_cache[variant_key] = feat_df
             n_feat        = len(feature_columns(feat_df))
             n_configured  = len(vdef["series"])
             n_merged      = len(merged_ext)
@@ -391,17 +417,20 @@ def main(argv: list[str] | None = None) -> int:
 
     # -- Naive baselines -------------------------------------------------------
     logger.info("=== Building internal-only features for baselines ===")
-    try:
-        feat_df_base, _, _ = _build_feat_df(ohlcv, [])
-    except Exception as exc:
-        logger.error("Failed to build baseline features: %s", exc)
-        return 1
+    if "internal_only" in feat_df_cache:
+        feat_df_base = feat_df_cache["internal_only"]
+    else:
+        try:
+            feat_df_base, _, _ = _build_feat_df(ohlcv, [])
+            feat_df_cache["internal_only"] = feat_df_base
+        except Exception as exc:
+            logger.error("Failed to build baseline features: %s", exc)
+            return 1
 
     n_base = len(feature_columns(feat_df_base))
     for bl_name, bl_factory in [
         ("zero_predictor", ZeroPredictor),
         ("prev_return",    PrevReturnPredictor),
-        ("ridge",          RidgeForecaster),
     ]:
         logger.info("=== Baseline: %s ===", bl_name)
         try:
@@ -421,10 +450,51 @@ def main(argv: list[str] | None = None) -> int:
             logger.error("  FAILED: %s: %s", type(exc).__name__, exc)
             results[f"baseline_{bl_name}"] = {"error": str(exc)}
 
+    # -- Ridge model comparison (official leaderboard, not a naive baseline) ---
+    for ridge_variant in ("internal_only", "internal_market_pruned"):
+        logger.info("=== Ridge: %s ===", ridge_variant)
+        fd = feat_df_cache.get(ridge_variant)
+        if fd is None:
+            logger.warning("  feat_df for '%s' not available; skipping Ridge", ridge_variant)
+            results[f"ridge_{ridge_variant}"] = {
+                "error": "feat_df not available", "variant": ridge_variant,
+            }
+            continue
+        try:
+            # Ridge (sklearn) cannot handle NaN; fill ext_* with 0.0
+            # (neutral for log_return features; leakage-free since we impute
+            #  a constant, not a future value)
+            fd_r = fd.copy()
+            ext_r = [c for c in fd_r.columns if c.startswith("ext_")]
+            if ext_r:
+                fd_r[ext_r] = fd_r[ext_r].fillna(0.0)
+            n_r = len(feature_columns(fd_r))
+            metrics_r = _run_baseline(fd_r, RidgeForecaster, bt)
+            results[f"ridge_{ridge_variant}"] = {
+                "model": "RidgeForecaster",
+                "variant": ridge_variant,
+                "n_features": n_r,
+                "n_merged_ext": len(ext_r),
+                "metrics": metrics_r,
+                "note": f"Ridge / {ridge_variant}",
+            }
+            logger.info(
+                "  DA=%.4f  Sharpe=%.4f  RMSE=%.6f  IC=%.4f",
+                metrics_r.get("directional_accuracy", float("nan")),
+                metrics_r.get("sharpe", float("nan")),
+                metrics_r.get("rmse", float("nan")),
+                metrics_r.get("ic", float("nan")),
+            )
+        except Exception as exc:
+            logger.error("  FAILED: %s: %s", type(exc).__name__, exc)
+            results[f"ridge_{ridge_variant}"] = {"error": str(exc), "variant": ridge_variant}
+
     # -- Output ----------------------------------------------------------------
     _print_feature_coverage(results)
     _print_summary(results)
     _print_analysis(results, args)
+    _print_model_comparison_grid(results)
+    _print_correlation_summary(feat_df_cache.get("internal_market"))
 
     # -- Save JSON --------------------------------------------------------------
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -607,6 +677,89 @@ def _print_analysis(results: dict, args) -> None:
         print("    External series with real data on synthetic dates may produce")
         print("    spurious correlations.  Run on real OHLCV for valid assessment.")
     print("-" * 70)
+
+
+def _print_model_comparison_grid(results: dict) -> None:
+    """2-D grid: LightGBM vs Ridge for internal_only and internal_market_pruned."""
+    print()
+    print("=" * 72)
+    print("MODEL COMPARISON GRID  (LightGBM vs Ridge)")
+    print(f"  {'Variant':<30} {'Model':<14} {'DA':>7} {'Sharpe':>8} {'RMSE':>9} {'IC':>7}")
+    print("  " + "-" * 68)
+
+    pairs = [
+        ("internal_only",          "lgbm_internal_only",          "ridge_internal_only"),
+        ("internal_market_pruned", "lgbm_internal_market_pruned", "ridge_internal_market_pruned"),
+    ]
+    for variant_label, lgbm_key, ridge_key in pairs:
+        for model_key, model_label in [(lgbm_key, "LightGBM"), (ridge_key, "Ridge")]:
+            r = results.get(model_key, {})
+            if "error" in r:
+                print(f"  {variant_label:<30} {model_label:<14}  ERROR: {r['error'][:28]}")
+                continue
+            m  = r.get("metrics", {})
+            da   = m.get("directional_accuracy", float("nan"))
+            sh   = m.get("sharpe",              float("nan"))
+            rmse = m.get("rmse",                float("nan"))
+            ic   = m.get("ic",                  float("nan"))
+            print(f"  {variant_label:<30} {model_label:<14} {da:>7.4f} {sh:>8.4f} {rmse:>9.6f} {ic:>7.4f}")
+        print()
+    print("=" * 72)
+
+
+def _print_correlation_summary(feat_df) -> None:
+    """Pairwise correlations of ext_* features + IC with Samsung return.
+
+    Expects the internal_market feat_df which has all 6 market ext columns.
+    """
+    if feat_df is None:
+        return
+    ext_cols = [c for c in feat_df.columns if c.startswith("ext_")]
+    if not ext_cols or "target" not in feat_df.columns:
+        return
+
+    sub = feat_df[ext_cols + ["target"]].dropna()
+    if len(sub) < 30:
+        return
+
+    print()
+    print("=" * 72)
+    print("CORRELATION ANALYSIS  (ext_* features, internal_market variant)")
+    print("-" * 72)
+
+    # IC: Pearson correlation of each ext feature with target (Samsung return)
+    print("  IC (Pearson corr vs Samsung next-day log return):")
+    for col in ext_cols:
+        ic_val = float(sub[col].corr(sub["target"]))
+        bar = ("+" if ic_val > 0 else "-") * min(int(abs(ic_val) * 40), 30)
+        print(f"    {col:<35}  IC={ic_val:+.4f}  {bar}")
+
+    # Pairwise correlation matrix among ext features
+    print()
+    print("  Pairwise correlation (ext features):")
+    corr = sub[ext_cols].corr()
+    short = [c.replace("ext_", "") for c in ext_cols]
+    header = f"  {'':18}" + "".join(f"{s[:7]:>8}" for s in short)
+    print(header)
+    for i, col in enumerate(ext_cols):
+        row = f"  {short[i]:<18}" + "".join(
+            f"{corr.loc[col, c]:>8.3f}" for c in ext_cols
+        )
+        print(row)
+
+    # Flag pairs with |r| > 0.6 as potentially redundant
+    high_corr = []
+    for i in range(len(ext_cols)):
+        for j in range(i + 1, len(ext_cols)):
+            r = corr.loc[ext_cols[i], ext_cols[j]]
+            if abs(r) >= 0.60:
+                high_corr.append((short[i], short[j], r))
+    if high_corr:
+        print()
+        print("  High-correlation pairs (|r| >= 0.60) -- candidates for pruning:")
+        for a, b, r in sorted(high_corr, key=lambda x: -abs(x[2])):
+            print(f"    {a:<12} <-> {b:<12}  r={r:+.3f}")
+    print("=" * 72)
 
 
 if __name__ == "__main__":

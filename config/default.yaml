@@ -156,24 +156,90 @@ external_data:
 
     # ── Tier 3: News perception signal (GDELT — no key, historical from 2013) ─
     # IMPORTANT: Treat as "market perception", not factual ground truth.
-    # Stored separately from fundamental (DART) features.
-    - name: "news_tone"           # Daily avg sentiment tone from GDELT
+    # GDELT CAMEO tone ≠ financial NLP. These are heuristic/baseline features.
+    # All GDELT series require internet access; they fail silently (all-NaN
+    # → auto-dropped) when network is unavailable (e.g. offline test runs).
+    #
+    # Samsung-specific queries:
+    - name: "news_tone_samsung"   # GDELT tone: Samsung Electronics coverage
       source: "gdelt"
-      symbol: "samsung electronics semiconductor"
+      symbol: "Samsung Electronics semiconductor chip memory"
       lag_days: 1
       feature_type: "level"
       frequency: "daily"
       extra:
         metric: "tone"
 
-    - name: "news_count"          # Daily article volume from GDELT
+    - name: "news_count_samsung"  # GDELT volume: Samsung Electronics coverage
       source: "gdelt"
-      symbol: "samsung electronics"
+      symbol: "Samsung Electronics semiconductor chip memory"
       lag_days: 1
       feature_type: "level"
       frequency: "daily"
       extra:
         metric: "count"
+
+    # Semiconductor sector queries (broader macro signal):
+    - name: "news_tone_semicon"   # GDELT tone: semiconductor sector
+      source: "gdelt"
+      symbol: "semiconductor DRAM NAND HBM memory chip foundry"
+      lag_days: 1
+      feature_type: "level"
+      frequency: "daily"
+      extra:
+        metric: "tone"
+
+    - name: "news_count_semicon"  # GDELT volume: semiconductor sector
+      source: "gdelt"
+      symbol: "semiconductor DRAM NAND HBM memory chip foundry"
+      lag_days: 1
+      feature_type: "level"
+      frequency: "daily"
+      extra:
+        metric: "count"
+
+    # NewsAPI-based metrics (recent 30 days only — not for historical backtest)
+    # Uncomment and set NEWSAPI_KEY env var to use these in live/recent mode:
+    #
+    # - name: "news_uncertainty"
+    #   source: "newsapi"
+    #   symbol: "Samsung Electronics semiconductor"
+    #   lag_days: 1
+    #   feature_type: "level"
+    #   frequency: "daily"
+    #   api_key_env: "NEWSAPI_KEY"
+    #   extra:
+    #     metric: "uncertainty"
+    #
+    # - name: "news_event_earnings"
+    #   source: "newsapi"
+    #   symbol: "Samsung Electronics earnings revenue profit"
+    #   lag_days: 1
+    #   feature_type: "level"
+    #   frequency: "daily"
+    #   api_key_env: "NEWSAPI_KEY"
+    #   extra:
+    #     metric: "event_earnings"
+    #
+    # - name: "news_event_supply"
+    #   source: "newsapi"
+    #   symbol: "Samsung semiconductor supply demand inventory"
+    #   lag_days: 1
+    #   feature_type: "level"
+    #   frequency: "daily"
+    #   api_key_env: "NEWSAPI_KEY"
+    #   extra:
+    #     metric: "event_supply"
+    #
+    # - name: "news_source_diversity"
+    #   source: "newsapi"
+    #   symbol: "Samsung Electronics semiconductor"
+    #   lag_days: 1
+    #   feature_type: "level"
+    #   frequency: "daily"
+    #   api_key_env: "NEWSAPI_KEY"
+    #   extra:
+    #     metric: "source_diversity"
 
 # ── LLM (optional) ────────────────────────────────────────────────────────────
 # Set provider to "none" to run fully deterministic (no LLM calls).

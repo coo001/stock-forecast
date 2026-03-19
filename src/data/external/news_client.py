@@ -34,10 +34,31 @@ Known limitations
 2. GDELT tone is computed from article-level CAMEO sentiment, which is
    designed for geopolitical events, not financial news.  It is a noisy
    but directionally useful proxy.
-3. The keyword-based headline sentiment used for ``newsapi`` is a crude
-   approximation.  For production, replace with a fine-tuned financial NLP
+3. The keyword-based headline metrics used for ``newsapi`` are heuristic
+   approximations.  For production, replace with a fine-tuned financial NLP
    model (e.g. FinBERT).
 4. NewsAPI free tier: 30-day history limit.  All older dates → NaN.
+5. Uncertainty / event scores are measured by keyword presence, not
+   syntactic understanding.  Negation is NOT modelled.
+
+Why these metrics, and their limitations
+-----------------------------------------
+``tone``        GDELT CAMEO tone: noisy geopolitical proxy.  Use with caution
+                for financial prediction.  Baseline feature only.
+``count``       Raw article volume. Captures attention spikes but not valence.
+``pos_score``   Fraction of positive-sentiment keywords in headlines.
+                Ignores negation ("not strong" → positive).
+``neg_score``   Fraction of negative-sentiment keywords. Same negation caveat.
+``uncertainty`` Fraction of uncertainty/hedging keywords.  Correlates with
+                event risk and analyst disagreement.
+``event_earnings`` Binary flag: 1.0 if any article mentions earnings-event
+                   keywords on that day. Useful as a regime indicator.
+``event_supply``   Binary flag: supply-chain / capacity event indicator.
+``source_diversity`` Count of distinct media outlets covering the query.
+                     Higher diversity → more consensus signal.
+
+All NewsAPI metrics are computed from headline + description text only;
+full article body is not available on the free tier.
 """
 from __future__ import annotations
 
@@ -55,23 +76,77 @@ _NEWSAPI_URL = "https://newsapi.org/v2/everything"
 _POLITE_DELAY_S = 0.6    # between GDELT chunk requests
 _CHUNK_MONTHS = 3        # GDELT query window size
 
-# ── Keyword-based headline sentiment (dependency-free) ───────────────────────
-# Source: financial/semiconductor domain vocabulary
-# These should be treated as heuristic approximations, not precise scores.
+# ── Financial/semiconductor vocabulary ────────────────────────────────────────
+# Source: financial press + semiconductor industry vocabulary
+# All scores ignore negation — heuristic quality only.
+
 _POS_WORDS = frozenset({
+    # Price / earnings positives
     "surge", "jump", "beat", "record", "growth", "strong", "upgrade",
     "bullish", "gain", "rise", "win", "boost", "positive", "profit",
     "recovery", "expansion", "outperform", "rebound", "milestone",
     "contract", "order", "exceed", "robust", "rally", "advance",
     "breakout", "demand", "upside", "raised", "increases", "improves",
+    # Semiconductor / tech positives
+    "ramp", "launch", "breakthrough", "innovation", "adoption",
+    "shipment", "design-win", "backlog", "inventory-lean", "recovery",
+    "upgrade", "qualification", "mass-production", "yield-improvement",
+    "hbm", "ai-chip", "server", "datacenter",
 })
+
 _NEG_WORDS = frozenset({
+    # Price / earnings negatives
     "fall", "drop", "miss", "weak", "loss", "downgrade", "bearish",
     "decline", "concern", "risk", "negative", "cut", "warning",
     "slowdown", "oversupply", "inventory", "glut", "recall",
     "investigation", "penalty", "layoff", "restructure", "deficit",
     "disappointing", "headwind", "pressure", "competition", "weaker",
     "shortfall", "lower", "reduces", "slump", "plunge",
+    # Semiconductor / tech negatives
+    "oversupply", "price-decline", "margin-squeeze", "capex-cut",
+    "fab-closure", "inventory-buildup", "demand-weakness", "tariff",
+    "sanction", "export-control", "ban", "restriction", "delay",
+})
+
+_UNCERTAINTY_WORDS = frozenset({
+    # Hedging / ambiguity language in analyst / news reports
+    "uncertain", "unclear", "volatile", "risk", "concern", "worry",
+    "ambiguous", "mixed", "diverge", "conflicting", "unpredictable",
+    "cautious", "watchful", "monitor", "wait-and-see", "depends",
+    "conditional", "subject-to", "pending", "await", "assess",
+    "variable", "fluctuating", "unstable", "unresolved", "dispute",
+})
+
+_EVENT_EARNINGS_WORDS = frozenset({
+    # Earnings / guidance / analyst coverage events
+    "earnings", "revenue", "profit", "eps", "quarterly", "annual",
+    "guidance", "forecast", "outlook", "beat", "miss", "report",
+    "results", "financial", "income", "operating", "margin",
+    "dividend", "buyback", "analyst", "estimate", "consensus",
+    "target", "rating", "upgrade", "downgrade", "preview", "release",
+})
+
+_EVENT_SUPPLY_WORDS = frozenset({
+    # Supply chain, capacity, production events
+    "supply", "demand", "inventory", "shortage", "oversupply", "glut",
+    "production", "capacity", "capex", "expansion", "cutback",
+    "fab", "wafer", "yield", "chip", "dram", "nand", "hbm",
+    "foundry", "packaging", "node", "nm", "process", "ramping",
+    "qualification", "allocation", "lead-time", "order-cut",
+    "tariff", "sanction", "export-control", "restriction",
+})
+
+# Supported metric types
+_GDELT_METRICS = frozenset({"tone", "count"})
+_NEWSAPI_METRICS = frozenset({
+    "tone",            # average (pos - neg) / total, range [-1, 1]
+    "count",           # article count
+    "pos_score",       # mean fraction of positive keywords
+    "neg_score",       # mean fraction of negative keywords
+    "uncertainty",     # mean fraction of uncertainty keywords
+    "event_earnings",  # fraction of articles with earnings keywords
+    "event_supply",    # fraction of articles with supply-chain keywords
+    "source_diversity",# count of distinct media outlets per day
 })
 
 
@@ -89,13 +164,17 @@ def fetch_series(
     Args:
         query: Search query string
                (e.g. ``"samsung electronics semiconductor"``).
+               For GDELT, this is passed directly to the API.
+               Use quoted phrases for exact matching: ``'"Samsung Electronics"'``.
         start: ISO fetch-start date.
         end: ISO fetch-end date. ``None`` → today.
         api_key_env: Env var for NewsAPI key (only used when
                      ``source_backend="newsapi"``).
         metric: Metric to return.
-                ``"tone"``  — average daily tone/sentiment score.
-                ``"count"`` — number of articles per day.
+                GDELT backend: ``"tone"`` or ``"count"``.
+                NewsAPI backend: ``"tone"``, ``"count"``, ``"pos_score"``,
+                ``"neg_score"``, ``"uncertainty"``, ``"event_earnings"``,
+                ``"event_supply"``, ``"source_diversity"``.
         source_backend: ``"gdelt"`` (historical, no key) or
                         ``"newsapi"`` (recent only, key required).
 
@@ -115,8 +194,20 @@ def fetch_series(
     end_str = end or date.today().isoformat()
 
     if source_backend == "gdelt":
+        if metric not in _GDELT_METRICS:
+            raise ValueError(
+                f"GDELT backend supports metrics: {sorted(_GDELT_METRICS)}.  "
+                f"Got '{metric}'.  For pos_score/neg_score/uncertainty/event_* "
+                f"use source_backend='newsapi'."
+            )
         return _fetch_gdelt(requests, query, start, end_str, metric)
+
     elif source_backend == "newsapi":
+        if metric not in _NEWSAPI_METRICS:
+            raise ValueError(
+                f"NewsAPI backend supports metrics: {sorted(_NEWSAPI_METRICS)}.  "
+                f"Got '{metric}'."
+            )
         api_key = os.environ.get(api_key_env, "")
         if not api_key:
             raise RuntimeError(
@@ -126,6 +217,7 @@ def fetch_series(
                 "Use source_backend='gdelt' for historical backtesting."
             )
         return _fetch_newsapi(requests, query, start, end_str, api_key, metric)
+
     else:
         raise ValueError(
             f"Unsupported source_backend: {source_backend!r}. "
@@ -142,7 +234,20 @@ def _fetch_gdelt(
     end: str,
     metric: str,
 ) -> pd.Series:
-    """Fetch from GDELT in quarterly chunks to avoid API timeouts."""
+    """Fetch from GDELT in quarterly chunks to avoid API timeouts.
+
+    GDELT tone note
+    ---------------
+    GDELT CAMEO tone is computed on geopolitical event articles.  For
+    financial news the signal is noisy.  Typical range: roughly -10 to +10;
+    positive = more favourable framing, negative = more conflict framing.
+    This is a directional proxy, not a precise financial sentiment score.
+
+    GDELT requires internet access.  In --synthetic mode (synthetic price data
+    but real dates), GDELT calls still reach out to the real API.  Without
+    internet, all chunks fail silently and the series is all-NaN → the column
+    is dropped by the pipeline.
+    """
     date_range = pd.date_range(start=start, end=end, freq="D")
     result = pd.Series(float("nan"), index=date_range, dtype=float)
     result.index.name = "date"
@@ -174,6 +279,13 @@ def _fetch_gdelt(
         query[:50], metric, n_valid, len(result),
         len(chunks), failed_chunks, start, end,
     )
+    if n_valid == 0:
+        logger.warning(
+            "[news_client] GDELT returned 0 valid days for query=%r metric=%s. "
+            "Possible causes: no internet access, query returns no results, "
+            "or GDELT API outage.  Series will be all-NaN → column will be dropped.",
+            query[:50], metric,
+        )
     return result
 
 
@@ -247,9 +359,23 @@ def _fetch_newsapi(
 
     Limitation: free tier provides only the last 30 days of history.
     Dates outside that window will have NaN values.
+
+    Available metrics
+    -----------------
+    tone            : mean (pos - neg) / (pos + neg) per day.  Range [-1, 1].
+    count           : article count per day.
+    pos_score       : mean fraction of pos-keyword words.  Range [0, 1].
+    neg_score       : mean fraction of neg-keyword words.  Range [0, 1].
+    uncertainty     : mean fraction of uncertainty words.  Range [0, 1].
+    event_earnings  : fraction of articles containing earnings keywords.
+    event_supply    : fraction of articles containing supply-chain keywords.
+    source_diversity: count of distinct media sources (domain names).
     """
     date_range = pd.date_range(start=start, end=end, freq="D")
-    daily_scores: dict[pd.Timestamp, list[float]] = {d: [] for d in date_range}
+    # Per-day accumulator:  date → list of per-article scores
+    daily: dict[pd.Timestamp, list[float]] = {d: [] for d in date_range}
+    # For source_diversity: date → set of source names
+    daily_sources: dict[pd.Timestamp, set[str]] = {d: set() for d in date_range}
 
     page = 1
     while True:
@@ -288,14 +414,30 @@ def _fetch_newsapi(
             pub_at = article.get("publishedAt", "")
             title = (article.get("title") or "")
             description = (article.get("description") or "")
-            if pub_at:
-                ts = pd.Timestamp(pub_at[:10])
-                if ts in daily_scores:
-                    score = _headline_sentiment(f"{title} {description}")
-                    daily_scores[ts].append(score)
+            source_name = (
+                (article.get("source") or {}).get("name") or
+                (article.get("source") or {}).get("id") or
+                "unknown"
+            )
+
+            if not pub_at:
+                continue
+
+            ts = pd.Timestamp(pub_at[:10])
+            if ts not in daily:
+                continue
+
+            text = f"{title} {description}"
+
+            # Accumulate per-article score for the requested metric
+            score = _compute_article_score(text, metric)
+            if score is not None:
+                daily[ts].append(score)
+
+            # Always track source diversity
+            daily_sources[ts].add(source_name)
 
         total = data.get("totalResults", 0)
-        # NewsAPI free tier caps retrievable articles at ~100 pages
         if page * 100 >= min(total, 1000):
             break
         page += 1
@@ -305,13 +447,18 @@ def _fetch_newsapi(
     result = pd.Series(float("nan"), index=date_range, dtype=float)
     result.index.name = "date"
 
-    for ts, scores in daily_scores.items():
-        if not scores:
-            continue
-        if metric == "count":
-            result[ts] = float(len(scores))
-        else:  # tone / sentiment
-            result[ts] = sum(scores) / len(scores)
+    for ts in date_range:
+        scores = daily[ts]
+        if metric == "source_diversity":
+            # Special case: count of unique sources for this day
+            n_sources = len(daily_sources[ts])
+            if n_sources > 0:
+                result[ts] = float(n_sources)
+        elif scores:
+            if metric == "count":
+                result[ts] = float(len(scores))
+            else:
+                result[ts] = sum(scores) / len(scores)
 
     n_valid = int(result.notna().sum())
     logger.info(
@@ -323,8 +470,57 @@ def _fetch_newsapi(
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
+def _compute_article_score(text: str, metric: str) -> float | None:
+    """Compute a single per-article score for the given metric.
+
+    Returns None for metrics that are aggregated differently (e.g. count,
+    source_diversity are handled at the day-level, not article-level).
+
+    All text-based scores ignore negation — heuristic quality only.
+    """
+    if not text:
+        return 0.0 if metric not in ("count", "source_diversity") else None
+
+    if metric == "count":
+        return 1.0  # each article contributes 1
+
+    words = set(text.lower().split())
+
+    if metric in ("tone", None):
+        pos = len(words & _POS_WORDS)
+        neg = len(words & _NEG_WORDS)
+        total = pos + neg
+        return (pos - neg) / total if total > 0 else 0.0
+
+    elif metric == "pos_score":
+        total = len(words)
+        return len(words & _POS_WORDS) / total if total > 0 else 0.0
+
+    elif metric == "neg_score":
+        total = len(words)
+        return len(words & _NEG_WORDS) / total if total > 0 else 0.0
+
+    elif metric == "uncertainty":
+        total = len(words)
+        return len(words & _UNCERTAINTY_WORDS) / total if total > 0 else 0.0
+
+    elif metric == "event_earnings":
+        # Binary: 1.0 if any earnings keyword present
+        return 1.0 if (words & _EVENT_EARNINGS_WORDS) else 0.0
+
+    elif metric == "event_supply":
+        return 1.0 if (words & _EVENT_SUPPLY_WORDS) else 0.0
+
+    elif metric == "source_diversity":
+        return None  # handled at day-level
+
+    return 0.0
+
+
 def _headline_sentiment(text: str) -> float:
     """Keyword-based financial sentiment score in [-1.0, 1.0].
+
+    Backward-compatible wrapper around _compute_article_score with metric="tone".
 
     This is a fast, zero-dependency heuristic intended for feature engineering.
     It counts positive and negative financial/semiconductor keywords in the text.

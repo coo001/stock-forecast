@@ -125,8 +125,12 @@ class ModelingResult(BaseModel):
 
     # External data visibility (empty when external_data_enabled=False)
     external_columns: list[str] = Field(default_factory=list)
-    # fraction of NaN values per external column (0.0 = fully populated)
+    # fraction of NaN values per external column after merge (0.0 = fully populated)
     external_missing_ratios: dict[str, float] = Field(default_factory=dict)
+    # all series names that were *configured* (attempted), regardless of success
+    attempted_external_features: list[str] = Field(default_factory=list)
+    # columns dropped with their reasons: {"ext_news_tone": "all-NaN (no coverage)"}
+    dropped_features_log: dict[str, str] = Field(default_factory=dict)
 
 
 # ── EvaluationAgent ───────────────────────────────────────────────────────────
@@ -181,17 +185,26 @@ class ExperimentReport(BaseModel):
         for k, v in e.aggregate_metrics.items():
             lines.append(f"  {k:<28} {v:>10.4f}")
         # External data section
-        if m.external_columns:
-            lines += ["-" * 70, f"EXTERNAL   : {len(m.external_columns)} column(s) merged"]
+        if m.attempted_external_features or self.config.external_data_enabled:
+            lines.append("-" * 70)
+            attempted = len(m.attempted_external_features)
+            merged = len(m.external_columns)
+            dropped = len(m.dropped_features_log)
+            lines.append(
+                f"EXTERNAL   : attempted={attempted}  merged={merged}  "
+                f"dropped={dropped}"
+            )
             for col in m.external_columns:
                 miss = m.external_missing_ratios.get(col, float("nan"))
-                lines.append(f"  {col:<30}  missing={miss*100:.1f}%")
-        elif self.config.external_data_enabled:
-            lines += [
-                "-" * 70,
-                "EXTERNAL   : [WARNING] external_data_enabled=True but 0 columns merged.",
-                "             Check API keys and symbols in config.",
-            ]
+                coverage = (1 - miss) * 100
+                lines.append(f"  ✓ {col:<28}  coverage={coverage:.1f}%")
+            for col, reason in m.dropped_features_log.items():
+                lines.append(f"  ✗ {col:<28}  [{reason}]")
+            if merged == 0 and attempted > 0:
+                lines.append(
+                    "  [!] All configured series failed — check API keys, "
+                    "symbols, internet access."
+                )
 
         lines += [
             "-" * 70,

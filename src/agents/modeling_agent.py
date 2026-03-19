@@ -53,6 +53,9 @@ class ModelingAgent(BaseAgent[ModelingInput, ModelingResult]):
 
         # ── External feature merge (optional) ────────────────────────────────
         ext_cols: list[str] = []
+        dropped_features_log: dict[str, str] = {}
+        attempted_names: list[str] = []
+
         ext_enabled = bool(fc.get("external_data_enabled"))
         configured_series = fc.get("external_series") or []
         logger.info(
@@ -66,6 +69,7 @@ class ModelingAgent(BaseAgent[ModelingInput, ModelingResult]):
                 merge_external_features,
             )
             series_cfgs = [ExternalSeriesConfig(**s) for s in configured_series]
+            attempted_names = [f"ext_{s.name}" for s in series_cfgs]
             fetch_start = ohlcv.index[0].strftime("%Y-%m-%d")
             fetch_end = ohlcv.index[-1].strftime("%Y-%m-%d")
             logger.info(
@@ -81,6 +85,12 @@ class ModelingAgent(BaseAgent[ModelingInput, ModelingResult]):
                 cache_ttl_hours=float(fc.get("external_cache_ttl_hours", 24.0)),
             )
             ext_cols = [c for c in ohlcv.columns if c.startswith("ext_")]
+
+            # Log which configured series failed to merge (never appeared)
+            missing_after_merge = [n for n in attempted_names if n not in ext_cols]
+            for name in missing_after_merge:
+                dropped_features_log[name] = "fetch failed (API error / missing key)"
+
             if ext_cols:
                 logger.info("[ModelingAgent] external columns merged: %s", ext_cols)
             else:
@@ -123,8 +133,20 @@ class ModelingAgent(BaseAgent[ModelingInput, ModelingResult]):
                     "(fetch failed or no data coverage): %s",
                     len(dead_cols), dead_cols,
                 )
+                for c in dead_cols:
+                    dropped_features_log[c] = "all-NaN (no data / no internet / no coverage)"
                 feat_df.drop(columns=dead_cols, inplace=True)
                 ext_cols = [c for c in ext_cols if c not in dead_cols]
+
+            # Warn about high-NaN columns (keep them — LightGBM handles NaN)
+            for c in ext_cols:
+                nan_pct = feat_df[c].isna().mean()
+                if nan_pct > 0.5:
+                    logger.warning(
+                        "[ModelingAgent] ext col '%s' is %.0f%% NaN — "
+                        "low coverage, may not contribute to model",
+                        c, nan_pct * 100,
+                    )
 
             # Drop rows where non-external columns are NaN (target + tech warmup).
             # LightGBM handles NaN natively; partial ext NaN is acceptable.
@@ -221,6 +243,8 @@ class ModelingAgent(BaseAgent[ModelingInput, ModelingResult]):
             top_features=top_features,
             external_columns=ext_cols,
             external_missing_ratios=ext_missing,
+            attempted_external_features=attempted_names,
+            dropped_features_log=dropped_features_log,
         )
 
         logger.info(

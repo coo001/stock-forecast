@@ -573,11 +573,28 @@ def _print_analysis(results: dict, args) -> None:
             frac_str = f"[{n_merge}/{n_conf} series merged]" if n_conf > 0 else ""
             print(f"  {key:<38}  DA={da:.4f}  D={delta:+.4f} {arrow}  {frac_str}")
 
+    # Dynamic market-feature assessment
+    market_da    = _da("lgbm_internal_market")
+    market_delta = (market_da - base_da) if (base_da is not None and market_da is not None) else None
+
     print()
     print("  HONEST ASSESSMENT")
     print("  -----------------")
     print("  * Market features (KOSPI/SOX/USD/KRW etc.): low-latency, reproducible.")
-    print("    Likely to help most on days with large macro moves.")
+    if market_delta is not None and market_delta < -0.005:
+        print(f"    [!] DA DECREASED by {abs(market_delta):.4f} vs internal_only.")
+        print("    Possible causes:")
+        print("      1) Multicollinear features (KOSPI/SOX/SP500/Hynix are correlated).")
+        print("         Try colsample_bytree < 0.8 or feature selection.")
+        print("      2) Default hyperparams tuned for 10 features, not 16.")
+        print("         Consider re-running with tuned lgbm_params for this feature set.")
+        print("      3) Noise: 2183 OOS obs over 11 years -- small changes in DA are")
+        print("         within sampling noise (~1-2 pp) for 35 folds of 63 obs each.")
+    elif market_delta is not None and market_delta > 0.005:
+        print(f"    [ok] DA improved by {market_delta:.4f} vs internal_only.")
+    else:
+        print("    DA change is within noise range (+/-0.5 pp).")
+    print("    Likely to contribute most on high-volatility macro event days.")
     print()
     print("  * GDELT news features: CAMEO geopolitical tone, NOT financial NLP.")
     print("    Signal quality: heuristic/baseline.  Treat any uplift with caution.")

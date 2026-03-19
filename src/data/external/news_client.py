@@ -73,7 +73,8 @@ logger = logging.getLogger(__name__)
 
 _GDELT_DOC_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 _NEWSAPI_URL = "https://newsapi.org/v2/everything"
-_POLITE_DELAY_S = 0.6    # between GDELT chunk requests
+_POLITE_DELAY_S = 5.5    # GDELT enforces ≤ 1 req/5 s per IP
+_POLITE_DELAY_429 = 15.0 # extra back-off on HTTP 429
 _CHUNK_MONTHS = 3        # GDELT query window size
 
 # ── Financial/semiconductor vocabulary ────────────────────────────────────────
@@ -257,20 +258,38 @@ def _fetch_gdelt(
 
     failed_chunks = 0
     for chunk_start, chunk_end in chunks:
-        try:
-            chunk_data = _gdelt_chunk(
-                requests_module, query, chunk_start, chunk_end, mode
-            )
-            for ts, val in chunk_data.items():
-                if ts in result.index:
-                    result[ts] = val
-            time.sleep(_POLITE_DELAY_S)
-        except Exception as exc:
-            failed_chunks += 1
-            logger.warning(
-                "[news_client] GDELT chunk %s–%s failed (%s): %s",
-                chunk_start, chunk_end, type(exc).__name__, exc,
-            )
+        # One retry on 429; otherwise attempt once.
+        for attempt in range(2):
+            try:
+                chunk_data = _gdelt_chunk(
+                    requests_module, query, chunk_start, chunk_end, mode
+                )
+                for ts, val in chunk_data.items():
+                    if ts in result.index:
+                        result[ts] = val
+                time.sleep(_POLITE_DELAY_S)
+                break  # success
+            except RuntimeError as exc:
+                if "429" in str(exc) and attempt == 0:
+                    # Already slept _POLITE_DELAY_429 inside _gdelt_chunk; retry.
+                    logger.info(
+                        "[news_client] GDELT 429 on chunk %s–%s; retrying …",
+                        chunk_start, chunk_end,
+                    )
+                    continue
+                failed_chunks += 1
+                logger.warning(
+                    "[news_client] GDELT chunk %s–%s failed (%s): %s",
+                    chunk_start, chunk_end, type(exc).__name__, exc,
+                )
+                break
+            except Exception as exc:
+                failed_chunks += 1
+                logger.warning(
+                    "[news_client] GDELT chunk %s–%s failed (%s): %s",
+                    chunk_start, chunk_end, type(exc).__name__, exc,
+                )
+                break
 
     n_valid = int(result.notna().sum())
     logger.info(
@@ -313,25 +332,52 @@ def _gdelt_chunk(
     }
 
     resp = requests_module.get(_GDELT_DOC_URL, params=params, timeout=90)
+
+    if resp.status_code == 429:
+        # Rate-limited: back off and raise so caller can retry or skip
+        time.sleep(_POLITE_DELAY_429)
+        raise RuntimeError(
+            f"GDELT API HTTP 429: {resp.text[:200]}"
+        )
+
     if resp.status_code != 200:
         raise RuntimeError(
             f"GDELT API HTTP {resp.status_code}: {resp.text[:200]}"
         )
 
-    data = resp.json()
+    # Guard: GDELT occasionally returns empty body (no articles / transient issue)
+    body = resp.text.strip()
+    if not body:
+        return {}
+
+    try:
+        data = resp.json()
+    except Exception:
+        return {}   # non-JSON response (HTML error page etc.)
+
+    if not isinstance(data, dict):
+        return {}
+
     timeline = data.get("timeline", [])
     if not timeline:
         return {}
 
     # GDELT structure: [{"series": [{"date": "YYYYMMDDHHMMSS", "value": float}]}]
-    series_data = (
-        timeline[0].get("series", [])
-        if isinstance(timeline[0], dict)
-        else timeline
-    )
+    first = timeline[0]
+    if isinstance(first, dict):
+        # Normal: {"series": [...], "name": "All Articles"}
+        series_data = first.get("series", [])
+        # Fallback: point dicts live directly in timeline (flattened structure)
+        if not series_data and "date" in first:
+            series_data = timeline
+    else:
+        # Unexpected structure — skip this chunk
+        return {}
 
     out: dict[pd.Timestamp, float] = {}
     for point in series_data:
+        if not isinstance(point, dict):
+            continue   # skip strings / non-dict items
         dt_str = point.get("date", "")
         val = point.get("value")
         if dt_str and val is not None:

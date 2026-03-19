@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "samsung-forecast"
+version = "0.1.0"
+description = "Samsung Electronics stock forecasting pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.26",
+    "scikit-learn>=1.4",
+    "lightgbm>=4.3",
+    "yfinance>=0.2",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "ta>=0.11",          # technical analysis indicators
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov",
+]
+agents = [
+    "pyautogen>=0.2",
+]
+llm-openai = [
+    "openai>=1.0",
+]
+llm-anthropic = [
+    "anthropic>=0.25",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"

@@ -114,7 +114,23 @@ class ModelingAgent(BaseAgent[ModelingInput, ModelingResult]):
         # ext_* columns must be added back by index alignment.
         if ext_cols:
             feat_df = feat_df.join(ohlcv[ext_cols], how="left")
-            feat_df.dropna(inplace=True)   # remove external warmup NaN rows
+
+            # Drop columns that are entirely NaN (failed fetches / no coverage).
+            dead_cols = [c for c in ext_cols if feat_df[c].isna().all()]
+            if dead_cols:
+                logger.warning(
+                    "[ModelingAgent] dropping %d all-NaN ext columns "
+                    "(fetch failed or no data coverage): %s",
+                    len(dead_cols), dead_cols,
+                )
+                feat_df.drop(columns=dead_cols, inplace=True)
+                ext_cols = [c for c in ext_cols if c not in dead_cols]
+
+            # Drop rows where non-external columns are NaN (target + tech warmup).
+            # LightGBM handles NaN natively; partial ext NaN is acceptable.
+            non_ext = [c for c in feat_df.columns if not c.startswith("ext_")]
+            feat_df.dropna(subset=non_ext, inplace=True)
+
             logger.info(
                 "[ModelingAgent] after external join: %d rows, %d ext cols",
                 len(feat_df), len(ext_cols),
@@ -127,6 +143,25 @@ class ModelingAgent(BaseAgent[ModelingInput, ModelingResult]):
             "(%d technical + %d external)",
             len(feat_df), len(feat_names), n_tech, len(ext_cols),
         )
+
+        # Compute per-column missing ratio for external features
+        ext_missing: dict[str, float] = {}
+        for col in ext_cols:
+            if col in feat_df.columns:
+                ext_missing[col] = float(feat_df[col].isna().mean())
+        if ext_missing:
+            logger.info(
+                "[ModelingAgent] external missing ratios: %s",
+                {k: f"{v*100:.1f}%" for k, v in ext_missing.items()},
+            )
+
+        # Enforce: enabled but 0 ext columns → warning
+        if ext_enabled and not ext_cols:
+            logger.warning(
+                "[ModelingAgent] external_data_enabled=True but 0 ext_* "
+                "columns ended up in the feature matrix after merge. "
+                "All configured series may have failed silently."
+            )
 
         # ── Walk-forward ──────────────────────────────────────────────────────
         logger.info("[ModelingAgent] starting walk-forward …")
@@ -184,6 +219,8 @@ class ModelingAgent(BaseAgent[ModelingInput, ModelingResult]):
             folds=fold_summaries,
             feature_names=feat_names,
             top_features=top_features,
+            external_columns=ext_cols,
+            external_missing_ratios=ext_missing,
         )
 
         logger.info(

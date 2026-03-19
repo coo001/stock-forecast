@@ -7,6 +7,7 @@ import type {
 
 export function toListItem(report: ExperimentReport): ReportListItem {
   const m = report.evaluation.aggregate_metrics;
+  const extCols = report.modeling_result.external_columns ?? [];
   return {
     id: report.experiment_id,
     generated_at: report.generated_at,
@@ -20,6 +21,7 @@ export function toListItem(report: ExperimentReport): ReportListItem {
     n_folds: report.modeling_result.n_folds,
     n_oos_observations: report.modeling_result.n_oos_observations,
     external_data_enabled: report.config.external_data_enabled,
+    n_ext_features: extCols.length,
     data_start: report.data_summary.date_start,
     data_end: report.data_summary.date_end,
   };

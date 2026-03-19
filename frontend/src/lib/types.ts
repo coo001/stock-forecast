@@ -89,6 +89,9 @@ export interface ModelingResult {
   folds: FoldSummary[];
   feature_names: string[];
   top_features: string[];
+  // External data visibility (empty arrays/object when external_data_enabled=false)
+  external_columns: string[];
+  external_missing_ratios: Record<string, number>;
 }
 
 export interface AggregateMetrics {
@@ -137,6 +140,7 @@ export interface ReportListItem {
   n_folds: number;
   n_oos_observations: number;
   external_data_enabled: boolean;
+  n_ext_features: number;         // actual merged ext_* column count
   data_start: string;
   data_end: string;
 }

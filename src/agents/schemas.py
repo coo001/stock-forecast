@@ -123,6 +123,11 @@ class ModelingResult(BaseModel):
     feature_names: list[str]
     top_features: list[str]           # top-5 by importance (if available)
 
+    # External data visibility (empty when external_data_enabled=False)
+    external_columns: list[str] = Field(default_factory=list)
+    # fraction of NaN values per external column (0.0 = fully populated)
+    external_missing_ratios: dict[str, float] = Field(default_factory=dict)
+
 
 # ── EvaluationAgent ───────────────────────────────────────────────────────────
 
@@ -175,6 +180,19 @@ class ExperimentReport(BaseModel):
         ]
         for k, v in e.aggregate_metrics.items():
             lines.append(f"  {k:<28} {v:>10.4f}")
+        # External data section
+        if m.external_columns:
+            lines += ["-" * 70, f"EXTERNAL   : {len(m.external_columns)} column(s) merged"]
+            for col in m.external_columns:
+                miss = m.external_missing_ratios.get(col, float("nan"))
+                lines.append(f"  {col:<30}  missing={miss*100:.1f}%")
+        elif self.config.external_data_enabled:
+            lines += [
+                "-" * 70,
+                "EXTERNAL   : [WARNING] external_data_enabled=True but 0 columns merged.",
+                "             Check API keys and symbols in config.",
+            ]
+
         lines += [
             "-" * 70,
             f"VERDICT    : {e.verdict.upper()}",
